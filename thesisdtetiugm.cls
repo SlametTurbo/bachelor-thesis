@@ -75,6 +75,7 @@
 \usepackage{algcompatible}
 \usepackage{algpseudocode}
 \usepackage{listings}
+\usepackage{upquote}
 \usepackage{color}
 \usepackage{url}
 \usepackage{ifthen}
@@ -86,6 +87,7 @@
 \usepackage{tikz}
 \usepackage{pgfplots}
 \usepackage{pgf-pie}
+\usepackage{dirtree}
 \usetikzlibrary{calc}
 \usetikzlibrary{positioning}
 \usetikzlibrary{arrows}
@@ -742,26 +744,30 @@
 %% Misc Styling
 %======================================
 %Source code style
+\usepackage{courier}% distinct monospace font for code listings
 \definecolor{codegreen}{rgb}{0,0.6,0}
 \definecolor{codegray}{rgb}{0.5,0.5,0.5}
 \definecolor{codepurple}{rgb}{0.58,0,0.82}
 
-\lstdefinestyle{mystyle}{ 
+\lstdefinestyle{mystyle}{
 	commentstyle=\color{codegreen},
 	keywordstyle=\color{magenta},
 	numberstyle=\tiny\color{codegray},
 	stringstyle=\color{codepurple},
-	basicstyle=\small,
-	breakatwhitespace=false,         
-	breaklines=true,                 
-	captionpos=b,                    
-	keepspaces=true,                 
-	numbers=left,                    
-	numbersep=5pt,                  
-	showspaces=false,                
+	basicstyle=\small\ttfamily,
+	breakatwhitespace=false,
+	breaklines=true,
+	captionpos=b,
+	keepspaces=true,
+	numbers=left,
+	numbersep=5pt,
+	showspaces=false,
 	showstringspaces=false,
-	showtabs=false,                  
-	tabsize=2
+	showtabs=false,
+	tabsize=2,
+	frame=single,
+	framesep=3pt,
+	rulecolor=\color{black}
 }
 \lstset{style=mystyle}
 

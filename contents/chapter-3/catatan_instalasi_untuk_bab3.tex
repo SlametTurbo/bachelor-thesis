@@ -1,0 +1,21 @@
+% Catatan: berkas ini dipindahkan dari Bab IV (chapter-4.tex) hasil restrukturisasi,
+% karena isinya adalah persiapan alat/lingkungan pengembangan yang secara metodologis
+% lebih tepat berada di Bab III (Metode Penelitian), bukan Bab IV (Hasil dan Pembahasan).
+% Konten belum disisipkan ke chapter-3.tex -- simpan di sini dulu sebagai draf siap pakai.
+% Seluruh isi berikut tetap valid dan terverifikasi langsung di lingkungan kerja.
+
+\subsection{Persiapan Lingkungan Pengembangan}
+
+Lingkungan pengembangan dibangun di atas Linux Ubuntu 24.04 LTS. Komponen \textit{toolchain} yang dipasang meliputi Yosys (sintesis RTL), nextpnr-xilinx (\textit{place-and-route}), openXC7 (paket \texttt{fasm2frames}/\texttt{xc7frames2bit}/\texttt{bit2fasm} untuk pembuatan \textit{bitstream}), riscv64-unknown-elf-gcc v13.2.0 (\textit{cross-compiler firmware}), dan Icarus Verilog (\texttt{iverilog}) untuk simulasi fungsional sebelum sintesis penuh dijalankan.
+
+Paket \texttt{openxc7} tidak tersedia di Snap Store publik, sehingga tidak dapat dipasang lewat \texttt{sudo snap install openxc7} secara langsung. Sebagai gantinya, berkas \texttt{.snap} diunduh langsung dari GitHub Releases resmi proyek (\texttt{openXC7/yosys-snap} dan \texttt{openXC7/openXC7-snap}) dan dipasang secara lokal menggunakan \texttt{snap install --classic --dangerous}. \texttt{pypy3} dipasang terpisah lewat \texttt{apt}, karena dibutuhkan oleh \texttt{bbaexport.py} untuk membangkitkan \textit{chip database} (\texttt{chipdb}) namun tidak disertakan dalam paket \texttt{.snap}. \texttt{Makefile} proyek juga mengasumsikan struktur direktori \textit{sibling}, yaitu \texttt{openXC7.mk} dan \texttt{chipdb/} berada satu level di atas \textit{repository} kerja, bukan di dalamnya.
+
+Selama tahap ini, ditemukan lima hambatan instalasi yang terverifikasi langsung di lingkungan kerja:
+
+\begin{itemize}
+	\item \textbf{\texttt{make synth} gagal mencari \texttt{openXC7.mk}} -- penyebabnya struktur direktori \textit{sibling} belum tersedia; solusinya membuat skrip \texttt{install.sh} yang menyalin \texttt{openXC7.mk} dan menyiapkan direktori \texttt{chipdb/} kosong satu level di atas \textit{repository} secara otomatis.
+	\item \textbf{\texttt{bbasm} gagal menulis \texttt{chipdb}} -- penyebabnya variabel \texttt{CHIPDB} didefinisikan sebagai \textit{path} relatif; solusinya mengubahnya menjadi \textit{path} absolut (\texttt{CHIPDB = \$(abspath ../chipdb)}).
+	\item \textbf{\texttt{snap install openxc7} gagal} -- penyebabnya paket tidak terdaftar di Snap Store publik; solusinya mengunduh berkas \texttt{.snap} langsung dari GitHub Releases proyek \texttt{openXC7}, sebagaimana diuraikan di atas.
+	\item \textbf{\texttt{pypy3: No such file or directory}} -- penyebabnya \texttt{pypy3} bukan bagian dari paket \texttt{.snap}; solusinya memasangnya terpisah lewat \texttt{apt install pypy3}.
+	\item \textbf{\texttt{main.c} gagal dikompilasi} -- penyebabnya tipe \texttt{uint8\_t} dipakai tanpa \texttt{\#include <stdint.h>}; solusinya menambahkan berkas \textit{header} tersebut.
+\end{itemize}

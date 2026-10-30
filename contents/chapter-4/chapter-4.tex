@@ -1,30 +1,513 @@
 \chapter{Hasil dan Pembahasan}
 
-Berikut ini adalah yang perlu diperhatikan untuk mengisi bab hasil dan pembahasan:
+Bab ini menguraikan hasil penelitian berupa implementasi \textit{soft-core} RISC-V RV32I mriscv yang berjalan pada \textit{board} FPGA Digilent Basys3, dibangun sepenuhnya dengan \textit{open-source toolchain} (Yosys, nextpnr-xilinx, openXC7). Pembahasan mencakup keberhasilan sintesis dan implementasi di FPGA, mekanisme \textit{program loading} lewat SPI \textit{runtime loader}, hasil pengujian fungsional pada \textit{hardware} fisik, verifikasi dan analisis mendalam RTL, nilai \textit{maximum operating frequency} (\textit{Fmax}) yang dihasilkan oleh proses \textit{place-and-route} dan \textit{resource utilization} pada konfigurasi operasional (RAM 32 KB, \textit{clock core} 50 MHz), serta hasil penambahan periferal UART dan \textit{hardware} I2C \textit{controller}.
 
-\begin{enumerate}
-	\item Setiap rumusan masalah boleh memiliki lebih dari 1 tujuan.
-	\item Setiap subbab harus spesifik menjawab setiap tujuan yang dituliskan.
-	\item Setiap rumusan masalah boleh dijawab dengan 1 subbab atau lebih.
-\end{enumerate}
+\section{Keberhasilan Sintesis dan Implementasi di FPGA}
+\label{sec:sintesis-berhasil}
 
-Berikut ini adalah contoh sub bab untuk menjelaskan tujuan penelitian.
+RTL yang telah dimodifikasi disintesis Yosys menjadi \textit{gate-level netlist} Xilinx Artix-7 (\texttt{synth\_xilinx}). \textit{Netlist} ini kemudian melalui \textit{place-and-route} oleh nextpnr-xilinx ke target XC7A35T-1CPG236C mengikuti \textit{physical constraint} \texttt{basys3\_spi.xdc}, sebelum \texttt{fasm2frames} mengonversi hasilnya menjadi \textit{configuration frame} (FASM). \textit{Frame} tersebut akhirnya diubah \texttt{xc7frames2bit} menjadi \textit{bitstream file} (\texttt{spi.bit}) yang diprogramkan ke FPGA lewat openFPGALoader melalui \textit{JTAG interface}.
 
-\section{Pembahasan Tujuan 1 dengan Hasil Penelitian 1 (Ubah Judul Sesuai dengan Hal yang Hendak dibahas)}
+Proses sintesis pada konfigurasi (RAM 32 KB, \textit{clock core} 50 MHz) menghasilkan \textit{bitstream file} (\texttt{spi.bit}) tanpa \textit{error} dan berhasil diprogramkan ke \textit{board} Digilent Basys3 melalui openFPGALoader. \textit{Firmware} diunggah lewat \texttt{cheetah\_mriscv.py} dengan \textit{output} program berikut:
 
-Sub bab pertama adalah membahas tujuan penelitian pertama dengan hasil penelitian ke-1. 
-Dapat ditambahkan beberapa sub bab jika diperlukan.
+\begin{verbatim}
+Cheetah terbuka, SCLK = 100 kHz, mode 0, MSB-first.
+Upload 42 kata dari ledshow.hex ...
+Selesai. Core dilepas; program berjalan.
+\end{verbatim}
 
-\section{Pembahasan Tujuan 1 dengan Hasil Penelitian 2 (Ubah Judul Sesuai dengan Hal yang Hendak dibahas)}
+Keberhasilan sintesis dan implementasi ini dicapai menggunakan RTL final yang telah melalui serangkaian keputusan pemeriksaan dan modifikasi (Subbab \ref{sec:verifikasi-rtl}).
 
-Sub bab kedua adalah membahas tujuan penelitian pertama dengan hasil penelitian ke-2. Sub bab ini merupakan contoh tambahan sub bab pertama.
+\section{Mekanisme \textit{Program Loading} dan Pengembangan \textit{Firmware}}
+\label{sec:firmware-spi}
 
-\section{Pembahasan Tujuan 2 dengan Hasil Penelitian 3 (Ubah Judul Sesuai dengan Hal yang Hendak dibahas)}
+Program dimuat ke memori \textit{soft-core} lewat \textit{host} Python \texttt{cheetah\_mriscv.py} yang mengendalikan Total Phase Cheetah SPI Adapter. Protokol yang dipakai mengirim \textit{frame} 66-\textit{bit} \texttt{\{instr[1:0], addr[31:0], data[31:0]\}}, dikemas menjadi 9 \textit{byte} (72 \textit{bit}, dengan 6 \textit{bit padding} di akhir yang dibuang oleh \textit{hardware} saat CS naik), pada SPI \textit{mode} 0 (CPOL=0, CPHA=0), MSB-\textit{first}. Sinyal \textit{chip-select} (CS) dipakai secara standar per \textit{frame} (\textit{active-low} selama transfer, sesuai konvensi SPI). Status \textit{reset}/\textit{release soft-core} (\texttt{PICORV\_RST}) \textbf{tidak} dikendalikan lewat pin \textit{reset} fisik terpisah, melainkan lewat \textit{bit} data pada \textit{frame} NOP yang dikirim melalui \textit{data line} (MOSI). \textit{Frame} NOP dengan \texttt{data=0} menahan \textit{core} dalam kondisi \textit{reset} selama proses penulisan program berlangsung, dan \textit{frame} NOP dengan \texttt{data=1} di akhir \textit{upload} melepas \textit{core} untuk mulai mengeksekusi program. Frekuensi SCLK dibatasi maksimum ¼ \textit{clock core}. Pada \textit{clock core} 50 MHz (batas $\sim$12,5 MHz) dipakai SCLK 100 kHz, jauh di bawah batas tersebut.
 
-Sub bab ketiga adalah membahas tujuan penelitian kedua. Dapat ditambahkan beberapa sub bab jika diperlukan.
+Pengembangan \textit{firmware bare-metal} menggunakan pola HAL \textit{header-only} pada \texttt{mriscv.h} (fungsi \texttt{static inline}), yang secara terukur menghemat 169 \textit{byte} dibandingkan pola \textit{header}/\textit{source} terpisah (2135 \textit{byte} vs 2304 \textit{byte} untuk program uji yang sama). \textit{Library} \texttt{ssd1306.h} untuk layar OLED mendukung dua mode lewat \textit{macro} \texttt{SSD1306\_USE\_BUFFER}: mode DIRECT (\textit{default}, tiap operasi gambar langsung dikirim ke I2C, \texttt{display()} menjadi \textit{no-op}, $\sim$8 \textit{byte} RAM) dan mode BUFFER (\texttt{display()} wajib dipanggil, +1024 \textit{byte} RAM untuk \textit{pixel buffer}). I2C \textit{interface} ke OLED tersedia dalam dua mode yang dipilih saat kompilasi: \textit{software bit-bang} melalui GPIO \textit{bank} 2 (mode \textit{default}) dan \textit{hardware} I2C \textit{controller} \texttt{i2c\_master.v} bila \textit{macro} \texttt{SSD1306\_HW\_I2C} didefinisikan (Subbab \ref{sec:uart-i2c}). Pada kedua mode, urutan inisialisasi SSD1306 terdiri atas 25 \textit{command}, termasuk \texttt{0x8D,0x14} (aktivasi \textit{charge pump}) yang krusial agar layar tidak kosong. \textit{Decoder} \textit{rotary encoder} KY-040 membaca arah putaran pada \textit{falling edge} sinyal CLK: \texttt{DT==1} diinterpretasikan sebagai putaran \textit{clockwise} (CW), \texttt{DT==0} sebagai \textit{counter-clockwise} (CCW).
 
-\section{Perbandingan Hasil Penelitian dengan Hasil Terdahulu}
+Klaim awal bahwa operator pembagian (\texttt{/}, \texttt{\%}) tidak dapat dipakai pada \textit{firmware} terbukti tidak akurat. Dengan menambahkan \texttt{-lgcc} pada perintah kompilasi (\texttt{-nostdlib -lgcc}, bukan \texttt{-nostdlib} saja), operasi pembagian dapat dikompilasi dan dijalankan. Verifikasi kompilasi langsung menunjukkan rutin \texttt{\_\_mulsi3} yang dipanggil murni berbasis \textit{software shift-and-add}, bukan ekstensi instruksi \textit{hardware multiplier}. Dengan demikian, ketiadaan dukungan pembagian/perkalian pada \textit{firmware} sebelumnya merupakan persoalan konfigurasi \textit{linker} yang belum disertakan, bukan keterbatasan arsitektur \textit{hardware}.
 
-Pembahasan penutup dapat menjelaskan mengenai kelebihan hasil pengembangan / 
-penelitian dan kekurangan dibandingkan dengan skripsi atau penelitian terdahulu atau
-perbandingan terhadap produk lain yang ada di pasaran. Penulis dapat menggunakan tabel untuk membandingkan secara gamblang dan menjelaskannya.
+Untuk perkalian, \textit{core} juga menyediakan \textit{hardware multiplier} \texttt{MULT.v} (Subbab \ref{subsec:struktur-internal-mriscvcore} Bab III). Bila \textit{firmware} dikompilasi dengan \texttt{-march=rv32i\_zmmul}, operator \texttt{*} pada kode C diterjemahkan menjadi instruksi \texttt{mul} yang dieksekusi oleh \texttt{MULT.v}, bukan oleh rutin \texttt{\_\_mulsi3}. Fungsi \texttt{MULT.v} diverifikasi dengan \texttt{mul\_test.c}, yang menjalankan instruksi \texttt{mul}, \texttt{mulh}, \texttt{mulhsu}, dan \texttt{mulhu} pada 50 pasang \textit{operand}, termasuk kasus tepi \texttt{0x80000000}, \texttt{0x7FFFFFFF}, dan \texttt{0xFFFFFFFF}. Keempat instruksi tersebut dipanggil lewat \textit{inline assembly}, sehingga bagian lain program tetap berupa instruksi RV32I dan tidak bergantung pada \texttt{MULT.v}. Nilai harapan dihitung di komputer \textit{host}, dan hasilnya dilaporkan melalui UART. Seluruh 200 operasi lulus, baik pada simulasi SoC lengkap maupun pada \textit{board} dengan \textit{clock core} 50 MHz. Pembagian tetap tidak didukung \textit{hardware} karena \textit{repository} mriscv tidak menyediakan unit pembagi. Oleh karena itu, \texttt{-march=rv32im} tidak boleh dipakai, karena operator \texttt{/} dan \texttt{\%} akan diterjemahkan menjadi instruksi \texttt{div}/\texttt{rem} yang memicu \textit{trap} saat dijalankan.
+
+\section{Hasil Pengujian Fungsional pada \textit{Hardware}}
+\label{sec:hasil-fungsional}
+
+Seluruh sasaran pengujian fungsional berhasil dijalankan pada \textit{hardware} fisik:
+
+\begin{itemize}
+	\item \textbf{GPIO/LED}: \texttt{ledshow.c} dan \texttt{switch\_led.c} berhasil dijalankan, dan pola nyala LED sesuai dengan program yang diunggah.
+	\item \textbf{\textit{Seven-segment}}: \texttt{sevensegment.c} dan \texttt{encoder\_7seg.c} berhasil menampilkan digit. \textit{Byte} \texttt{gpio\_datanw} dipecah menjadi dua \textit{nibble} yang ditampilkan bergantian (\textit{time-multiplex}) dengan periode $\sim$1,3 ms per digit (\texttt{scan\_cnt[16]} pada \textit{clock} 100 MHz) lewat \textit{decode table} heksadesimal ke \textit{seven-segment}. Saat ini tampilan terbatas pada 2 dari 4 digit yang aktif, karena \textit{multiplexing} 4 digit belum diimplementasikan pada RTL \textit{top module} (\texttt{an = digit\_sel ? 4'b1101 : 4'b1110}).
+	\item \textbf{\textit{Rotary encoder} KY-040}: arah putaran (CW/CCW) yang terbaca \texttt{encoder\_test.c}/\texttt{encoder\_7seg.c} sesuai dengan arah putaran fisik yang dilakukan pada \textit{encoder}.
+	\item \textbf{Layar OLED SSD1306 (I2C \textit{bit-bang})}: inisialisasi dan tampilan berhasil diverifikasi lewat \textit{firmware} pada pengujian encoder+OLED, dengan kalibrasi \texttt{ihold()} dinaikkan 4$\times$ mengikuti kenaikan \textit{clock domain} I2C \textit{bit-bang} dari 12,5 MHz ke 50 MHz.
+	\item \textbf{UART}: \texttt{uart\_hello.c} dan \texttt{uart\_stress.c} menampilkan teks yang benar pada \textit{serial terminal} (115200 8N1), dan \texttt{uart\_echo.c} melakukan \textit{echo} terhadap karakter yang diketik pada terminal (rincian pada Subbab \ref{subsec:uji-uart-i2c}).
+	\item \textbf{\textit{Hardware} I2C \textit{Controller}}: \texttt{oled\_hw.c} menampilkan teks pada OLED melalui \texttt{i2c\_master.v}, dan \texttt{oled\_i2c\_stress.c} berjalan tanpa NACK, \textit{arbitration lost}, maupun \textit{error} data (rincian pada Subbab \ref{subsec:uji-uart-i2c}).
+\end{itemize}
+
+Keseluruhan pengujian ini konsisten dengan kriteria analisis fungsional yang ditetapkan pada Subbab Metode Analisis Hasil Akhir, Bab III.
+
+Keberhasilan seluruh pengujian di atas turut ditunjang oleh infrastruktur pada \textit{board layer} (\texttt{basys3\_top.v}). \textit{Power-on reset} (POR) \textit{circuit} diimplementasikan sebagai \textit{counter} 16-\textit{bit} yang menahan sinyal \textit{reset} aktif selama $\sim$0,65 ms setelah \textit{clock} 100 MHz mulai berjalan, sehingga desain dapat langsung berjalan begitu FPGA selesai dikonfigurasi tanpa memerlukan penekanan \textit{push button} \textit{reset} manual saat pengujian. Sinyal \textit{input} \textit{switch} (\texttt{sw[7:0]}) turut di-\textit{synchronize} melalui dua \textit{flip-flop} berurutan sebelum diteruskan ke \textit{read path} GPIO, untuk mencegah \textit{metastability} akibat sinyal \textit{input} dari \textit{board} yang bersifat \textit{asynchronous}.
+
+\section{Analisis dan Verifikasi \textit{Source Code} RTL}
+\label{sec:verifikasi-rtl}
+
+\textit{Soft-core} mriscv dimodifikasi secara bertahap untuk memastikan kompatibilitas desain dengan \textit{toolchain} dan \textit{board} target, menghasilkan enam modifikasi sebagaimana ditunjukkan pada Tabel \ref{Tab: Pemeriksaan Modifikasi RTL}.
+
+\begin{table}[H]
+	\centering
+	\small
+	\begin{tabular}{|c|p{4.4cm}|p{2.6cm}|p{5.2cm}|}
+		\hline
+		\textbf{No} & \textbf{Modul} & \textbf{Status Modifikasi} & \textbf{Keterangan} \\
+		\hline
+		1 & \texttt{SP32B1024.v} & Ditulis ulang &  Modul tidak tersedia (atau \textit{missing}) pada repository mriscv \\ \hline
+		2 & \texttt{axi4\_\-inter\-connect.v} & Dipatch & Perubahan mekanisme latch menjadi flip-flop guna memastikan stabilitas hasil sintesis, konstruksi asli terbukti tetap dapat disintesis Yosys (Subbab \ref{subsec:tristate-axi4}) \\ \hline
+		3 & \texttt{mriscvcore.v} + \texttt{ALU.v} & Dipatch & Penggunaan logika \textit{tri-state} terbukti lewat sintesis penuh membuat seluruh register \textit{write-back} di-\textit{hardwire} menjadi nol (Subbab \ref{subsec:tristate-core})  \\ \hline
+		4 & \texttt{spi\_\-axi\_\-master.v} & Ditulis ulang &  Untuk utilisasi \textit{SPI runtime loader} (Subbab \ref{subsec:multiclock}) \\ \hline
+		5 & \texttt{basys3\_\-spi.xdc} & Dimodifikasi & Dimodifikasi dari \texttt{basys3\_master.xdc}, berisi pengaturan \textit{routing} dan \textit{timing} \\ \hline
+		6 & \texttt{bus\_\-sync\_\-sf.v} & Dipatch (152 baris) & Untuk menghindari \textit{clock net} buatan manual lewat \texttt{\textasciitilde CLK}\\ \hline
+	\end{tabular}
+	\normalsize
+	\vspace{0.5em}
+	\caption{Ringkasan Pemeriksaan Modifikasi RTL}
+	\label{Tab: Pemeriksaan Modifikasi RTL}
+\end{table}
+
+Rincian teknis dari modifikasi yang dilakukan diatas, termasuk cuplikan kode, metode verifikasi, serta dasar teori dari keperluan untuk melakukan modifikasi diuraikan pada subbab \ref{subsec:sp32b1024}--\ref{subsec:multiclock}.
+
+% \subsection{Ringkasan Metodologi Verifikasi}
+% \label{subsec:metodologi-verifikasi}
+
+% Verifikasi atas ketujuh modifikasi RTL pada Tabel \ref{Tab: Pemeriksaan Modifikasi RTL} dilakukan melalui dua pendekatan yang saling melengkapi. Pendekatan pertama adalah evaluasi sintesis terhadap RTL yang belum/tidak dimodifikasi (dikembalikan ke versi \textit{upstream}), untuk mengamati secara langsung bagaimana Yosys menangani -- atau gagal menangani -- suatu konstruksi tertentu (Subbab \ref{subsec:tristate-axi4} dan \ref{subsec:tristate-core}). Pendekatan kedua adalah simulasi fungsional (\texttt{iverilog}) terhadap RTL yang telah dimodifikasi, untuk memverifikasi apakah suatu patch benar-benar berpengaruh terhadap perilaku desain sebagaimana dimaksudkan (Subbab \ref{subsec:negedge} dan \ref{subsec:addr-mask}). Kombinasi kedua pendekatan diperlukan karena keberhasilan sintesis semata tidak dapat dijadikan jaminan kebenaran fungsional, sebagaimana ditunjukkan berulang kali pada temuan-temuan berikut.
+
+\subsection{Modifikasi \texttt{SP32B1024.v}}
+\label{subsec:sp32b1024}
+
+Modul \texttt{SP32B1024.v} ditulis dalam bentuk RTL \textit{behavioral} yang dipetakan ke \textit{Block RAM} (BRAM) FPGA, karena modul dengan nama tersebut tidak tersedia pada rilis \textit{open-source}. Modul ini menyertakan blok inisialisasi nilai awal:
+
+\begin{lstlisting}[language=Verilog]
+integer i;
+initial begin
+    if (INIT_FILE != "") $readmemh(INIT_FILE, mem);
+    else for (i = 0; i < 8192; i = i + 1) mem[i] = 32'h0;
+end
+\end{lstlisting}
+
+Tanpa blok ini, isi BRAM tidak terdefinisi setelah konfigurasi Artix-7, menyebabkan kegagalan \textit{booting} acak.
+
+Parameter \texttt{INIT\_FILE} pada modul ini mendukung dua mode operasi. \textbf{Mode operasional} (\texttt{INIT\_FILE=""}, digunakan pada seluruh pengujian fungsional (Subbab \ref{sec:hasil-fungsional})): BRAM diinisialisasi kosong (nol) saat konfigurasi FPGA, dan program dimuat setelahnya secara \textit{runtime} lewat SPI \textit{interface} (Subbab \ref{sec:firmware-spi}), sehingga proses sintesis sepenuhnya terpisah dari proses pemrograman. \textbf{Mode uji verifikasi} (\texttt{INIT\_FILE} menunjuk ke \textit{file} \texttt{.hex}, dipakai khusus untuk uji \textit{hardware} isolasi \textit{tri-state} (Subbab \ref{subsec:tristate-core})): isi BRAM langsung ditentukan oleh \texttt{\$readmemh} saat sintesis, sehingga \textit{firmware} uji sudah tertanam di \textit{bitstream} begitu FPGA dikonfigurasi, tanpa bergantung pada SPI \textit{loader}. Mode ini mempercepat \textit{debugging iteration cycle} karena mekanisme \textit{program loading} dieliminasi sebagai variabel.
+
+\subsection{Modifikasi \textit{Latch} pada \texttt{axi4\_interconnect.v}}
+\label{subsec:latch-axi4}
+
+Pada \texttt{axi4\_interconnect.v}, dua blok kombinasional dengan \textit{sensitivity list} eksplisit, yang menghasilkan struktur \textit{latch}, diubah menjadi struktur sekuensial \textit{edge-triggered}:
+
+\begin{lstlisting}[language=Verilog]
+// upstream (latch):
+always @(m_axi_awvalid[unpk_idx] or RST or m_axi_awaddr[...]) begin
+    if (RST == 1'b0) m_axi_awaddr_g[unpk_idx] = {sword{1'b0}};
+    else if (m_axi_awvalid[unpk_idx]) m_axi_awaddr_g[unpk_idx] = m_axi_awaddr[...];
+end
+
+// setelah dipatch:
+always @(posedge CLK) begin
+    if (RST == 1'b0) m_axi_awaddr_g[unpk_idx] = {sword{1'b0}};
+    else if (m_axi_awvalid[unpk_idx]) m_axi_awaddr_g[unpk_idx] = m_axi_awaddr[...];
+end
+\end{lstlisting}
+
+\subsection{\textit{Tri-state} pada \texttt{axi4\_interconnect.v}: Ditangani Otomatis oleh Yosys (TRIBUF)}
+\label{subsec:tristate-axi4}
+
+Berbeda dari modifikasi \textit{latch} pada modul yang sama (Subbab \ref{subsec:latch-axi4}), \texttt{axi4\_interconnect.v} juga mengandung konstruksi \textit{tri-state} (\texttt{\{sword\{1'bz\}\}}) yang terpisah dan tetap dipertahankan tanpa dipatch, dengan parameter \textit{default} \texttt{addressing=0} (mode \textit{tri-state}) yang tidak di-\textit{override} di manapun. Verifikasi lewat dua kali sintesis independen (Yosys 0.33 dan 0.38) menunjukkan hasil identik: log sintesis mencatat tahap \texttt{27.7. Executing TRIBUF pass.} dieksekusi, dan \textbf{nol} primitif TBUF muncul pada \textit{netlist} akhir, tanpa \textit{error}. \textit{Warning} \texttt{"Yosys has only limited support for tri-state logic"} yang tercatat pada modul ini bersifat normal, bukan indikasi kegagalan.
+
+Temuan ini menunjukkan Yosys (\texttt{synth\_xilinx}) memiliki \textit{pass} internal TRIBUF yang secara otomatis mengonversi pola \textit{tri-state} \textbf{lokal sederhana} (satu \texttt{assign} per \textit{net} dengan operator \textit{ternary}) menjadi \textit{multiplexer}, tanpa memerlukan RTL ditulis ulang manual. Hal ini berbeda dengan kasus pada \texttt{mriscvcore.v}/\texttt{ALU.v} (Subbab \ref{subsec:tristate-core}), yang melibatkan pola \textit{tri-state} \textbf{lintas-modul} yang tidak tertangani otomatis oleh \textit{pass} yang sama.
+
+\subsection{\textit{Negedge} pada \texttt{AXI\_SP32B1024.v}: Disengaja, \textit{Patch} Naif Terbukti Merusak}
+\label{subsec:negedge}
+
+Berbeda dari modifikasi-modifikasi sebelumnya, konstruksi \texttt{always @(negedge CLK)} pada \texttt{AXI\_SP32B1024.v} sengaja \textbf{dipertahankan}, tidak dipatch:
+
+\begin{lstlisting}[language=Verilog]
+always @(negedge CLK) begin
+    // A/CEN/WEN sengaja di-latch setengah-siklus setelah FSM AXI (posedge) settle
+end
+\end{lstlisting}
+
+Kode \textit{upstream} menyertakan komentar pengembang asli yang menjelaskan alasan penggunaan \texttt{negedge}: \textit{"we provide the signals in negedge, because the setup and hold sh*t"}. Hipotesis awal menduga pola ini adalah praktik desain lama yang perlu dikonversi ke \texttt{posedge} agar seluruh logika bekerja pada \textit{rising edge}.
+
+Pengujian empiris lewat simulasi fungsional \texttt{iverilog} dengan \textit{testbench} protokol SPI nyata membuktikan hipotesis tersebut \textbf{keliru}: mengganti \texttt{negedge} menjadi \texttt{posedge} pada kedua baris terkait merusak fungsi \textit{write} SRAM secara total. Penyebabnya adalah semantik \textit{non-blocking assignment}. Setelah konversi, \texttt{SP32B1024.v} membaca \textit{address} \texttt{A} yang tertinggal satu \textit{clock cycle} penuh, karena hubungan \textit{half-cycle timing} yang sebelumnya sengaja dijaga antara \textit{state machine} AXI (\textit{posedge}) dan modul memori (\textit{posedge} murni) menjadi hilang.
+
+Berdasarkan bukti ini, patch \texttt{negedge}$\rightarrow$\texttt{posedge} \textbf{dibatalkan}, dan konstruksi \texttt{negedge} dipertahankan sebagaimana adanya. Konfirmasi \textit{netlist} menunjukkan 47 \textit{flip-flop negative-edge} (\texttt{FDRE\_1}/\texttt{FDSE\_1}) tetap ada pada hasil sintesis akhir, sesuai desain yang dipertahankan.
+
+\subsection{\textit{Tri-state} pada \texttt{mriscvcore.v}/\texttt{ALU.v}: Temuan Utama yang Merusak Seluruh \textit{Write-back Path}}
+\label{subsec:tristate-core}
+
+Investigasi ini mengoreksi status modifikasi pada \texttt{mriscvcore.v}/\texttt{ALU.v} dari semula "opsional" menjadi \textbf{wajib}, berdasarkan bukti sintesis penuh dan dua pengujian \textit{hardware} independen. \textit{Write-back path} register yang semula berbentuk bus \textit{tri-state} diubah menjadi struktur \textit{multiplexer} berbasis operasi OR:
+
+\begin{lstlisting}[language=Verilog]
+// mriscvcore.v -- setelah dipatch:
+wire [31:0] rd_alu, rd_mult, rd_util, rd_mem, rd_irq;
+assign rd = rd_alu | rd_mult | rd_util | rd_mem | rd_irq;
+
+// ALU.v -- sebelum: assign rd = is_rd_nr ? OUT_Alu_rd : 32'bz;
+// ALU.v -- setelah:  assign rd = is_rd_nr ? OUT_Alu_rd : 32'b0;
+\end{lstlisting}
+
+\textbf{Langkah 1, sintesis Yosys saja (mode \textit{stat}):} \texttt{mriscvcore.v}/\texttt{ALU.v} dikembalikan ke versi \textit{upstream} (\textit{tri-state} asli), sedangkan modul lain tetap dalam kondisi terpatch. Hasil: proses selesai tanpa \textit{error} fatal, namun log mencatat \textbf{32 warning} \textit{"multiple conflicting drivers"}, yaitu satu per \textit{bit} dari \textit{bus} \texttt{rd} 32-\textit{bit}, dengan lima modul (\texttt{ALU}, \texttt{IRQ}, \texttt{MEMORY\_INTERFACE}, \texttt{MULT}, \texttt{UTILITY}) tercatat sebagai \textit{driver} yang saling bentrok pada \textit{net} yang sama. Total \textit{cell} hasil sintesis 1689--1691 (dibandingkan 3996 pada versi terpatch), mengindikasikan banyak logika yang gugur karena resolusi konflik.
+
+\textbf{Langkah 2, sintesis penuh via \texttt{make synth}:} \textit{Warning} berubah nama menjadi \textit{"Driver-driver conflict"}, dengan total \textbf{128 warning} (32 \textit{bit} $\times$ 4 modul: \texttt{ALU}, \texttt{MEMORY\_INTERFACE}, \texttt{MULT}, \texttt{UTILITY}). \texttt{IRQ} tidak muncul pada pencarian ini, kemungkinan disebabkan tahap \textit{pipeline} sintesis yang berbeda, dan hal ini belum diverifikasi tuntas. Cuplikan aktual dari log sintesis:
+
+\begin{verbatim}
+Warning: Driver-driver conflict for
+\u_impl.mriscvcore_inst.ALU_inst.OUT_Alu_rd[31]
+between ALU_inst.$procdff$6064.Q
+and constant 1'0 in basys3_top:
+Resolved using constant.
+\end{verbatim}
+
+Seluruh 128 konflik (128/128) diselesaikan Yosys dengan cara yang identik: \textbf{\texttt{Resolved using constant}}, bernilai \texttt{1'0}. Artinya \textit{net} \texttt{rd} pada \textit{netlist} akhir pada dasarnya \textbf{selalu bernilai nol}, apa pun instruksi yang dieksekusi.
+
+\textbf{Kenapa ini merusak seluruh eksekusi, bukan hanya \texttt{lw}:} Pada \texttt{mriscvcore.v}, \texttt{rd} bukan sekadar \textit{output path} dari \texttt{MEMORY\_INTERFACE} (operasi \textit{load}), melainkan \textbf{satu-satunya \textit{write-back bus}} menuju \texttt{REG\_FILE}, yang dipakai bersama oleh seluruh modul yang menghasilkan nilai untuk ditulis ke register (\texttt{ALU}, \texttt{MEMORY\_INTERFACE}, \texttt{MULT}, \texttt{IRQ}, \texttt{UTILITY}). Karena \texttt{rd} di-\textit{hardwire} ke nol, \textbf{setiap instruksi yang menulis register, termasuk operasi aritmetika biasa seperti \texttt{add}/\texttt{addi}/\texttt{li}, juga menghasilkan nilai nol}, bukan hanya instruksi \texttt{lw}.
+
+\textbf{Uji \textit{hardware} dengan dua \textit{firmware} independen, program di-\textit{bake} langsung ke \textit{bitstream} lewat \texttt{INIT\_FILE}:}
+
+\textit{Firmware} 1 (uji \textit{write-read} RAM): \texttt{sw} nilai \texttt{0xAA} ke \textit{address} RAM \texttt{0x400}, \texttt{lw} kembali, lalu tampilkan hasilnya ke LED lewat \texttt{led\_set()}. \textbf{Hasil: seluruh LED mati} (ekspektasi: pola \texttt{10101010}).
+
+\textit{Firmware} 2 (\texttt{test\_tristate.c}, uji kontrol yang murni \textit{write} tanpa \texttt{lw} sama sekali):
+
+\begin{lstlisting}[language=C]
+#include "mriscv.h"
+int main(void) {
+    led_set(0xAA);   /* langsung tulis konstanta ke LED, TANPA sw+lw RAM */
+    for(;;){}
+}
+\end{lstlisting}
+
+\textbf{Hasil: seluruh LED mati juga.} \textit{Firmware} ini semula dirancang untuk mengisolasi apakah kegagalan spesifik pada \textit{path} \texttt{lw}. Namun karena instruksi \texttt{li}/\texttt{addi} (dipakai \texttt{led\_set()}) \textbf{juga} melewati \textit{bus} \texttt{rd} yang sama untuk \textit{write-back} ALU, desain uji kontrol ini tidak benar-benar mengisolasi variabel seperti yang dimaksudkan. Kelemahan ini ditemukan lewat analisis log sintesis, bukan lewat uji \textit{hardware} tambahan.
+
+\textbf{Verifikasi mekanisme \texttt{INIT\_FILE} bekerja (menyingkirkan kemungkinan alternatif):} Parameter \texttt{INIT\_FILE} dibaca langsung dari \textit{netlist} hasil sintesis dalam bentuk 136-\textit{bit} biner, didekode manual 8-\textit{bit} per karakter, menghasilkan persis string \texttt{"test\_tristate.hex"}:
+
+\begin{verbatim}
+Parameter INIT_FILE (136 bit):
+0111010001100101011100110111010001
+0111110111010001110010011010010111
+0011011101000110000101110100011001
+0100101110011010000110010101111000
+-> didekode 8-bit/karakter -> "test_tristate.hex"
+\end{verbatim}
+
+Hasil ini membuktikan mekanisme \textit{firmware loading} langsung ke \textit{bitstream} (tanpa SPI \textit{loader}) bekerja dengan benar. Kegagalan LED pada kedua \textit{firmware} uji \textbf{bukan} disebabkan kegagalan \textit{program loading}, melainkan murni akibat bug \textit{tri-state} pada \textit{write-back path}.
+
+\textbf{Kesimpulan:} Modifikasi pada \texttt{mriscvcore.v}/\texttt{ALU.v} (\textit{tri-state} $\rightarrow$ OR-\textit{mux}) bersifat \textbf{wajib}, bukan opsional. Berbeda dari kasus \texttt{axi4\_interconnect.v} (Subbab \ref{subsec:tristate-axi4}), di mana \textit{pass} TRIBUF menangani \textit{tri-state} otomatis dengan sempurna, pola \textit{tri-state} \textbf{lintas-modul} (banyak instansiasi modul terpisah berbagi satu \textit{wire} lewat \textit{port}, bukan satu \texttt{assign} lokal) tidak tertangani oleh \textit{pass} yang sama. Yosys justru menyelesaikannya secara diam-diam menjadi konstanta nol, sebuah \textit{silent failure} yang lolos dari \texttt{CHECK pass} Yosys. \texttt{CHECK pass} melaporkan \texttt{"0 problems"} karena memang tidak memeriksa \textit{driver-driver conflict}, sehingga hal ini merupakan perbedaan cakupan pemeriksaan, bukan kontradiksi.
+
+\textit{Status pengujian lanjutan:} pengujian \textit{positive control} (memprogram ulang versi RTL yang sudah dipatch/OR-\textit{mux} dengan \textit{firmware} uji yang sama, memverifikasi LED menyala pola \texttt{10101010}) direkomendasikan sebagai langkah verifikasi penutup, namun hasilnya belum dilaporkan secara terpisah pada penelitian ini.
+
+\subsection{Parameter \texttt{addr\_mask}/\texttt{addr\_use} Tidak Ter-\textit{override}: Ekspansi RAM dan Relokasi Periferal Sempat Mengalami \textit{Silent Failure}}
+\label{subsec:addr-mask}
+
+Temuan verifikasi lain muncul pada tahap instansiasi \texttt{axi4\_interconnect.v} di dalam \texttt{impl\_axi.v}. Modul \texttt{axi4\_interconnect.v} memiliki parameter \texttt{addr\_mask}/\texttt{addr\_use} sendiri dengan nilai \textit{default} yang di-\textit{hardcode} (mengarah ke \textit{address map} RAM 4 KB lama), sedangkan \texttt{impl\_axi.v} turut mendefinisikan \texttt{localparam} bernama sama berisi \textit{address map} baru (RAM 32 KB). Namun, keduanya berada pada \textit{scope} modul yang berbeda. Karena instansiasi \texttt{axi4\_interconnect.v} pada \texttt{impl\_axi.v} awalnya dilakukan tanpa \textit{override} parameter secara eksplisit (\texttt{\#(.addr\_mask(addr\_mask), .addr\_use(addr\_use))}), \texttt{localparam} pada \texttt{impl\_axi.v} tidak pernah benar-benar dipakai. \textit{Decoder} AXI tetap diam-diam berjalan dengan \textit{address map} 4 KB lama, walaupun \textit{file} RTL ``kelihatannya'' sudah diperbarui.
+
+Akibatnya, ekspansi RAM ke 32 KB serta relokasi periferal DAC/ADC/GPIO ke \textit{address} \texttt{0x4000+} tampak tidak berpengaruh sama sekali secara fungsional, tanpa disertai kegagalan atau \textit{hang} yang jelas. Kondisi ini sulit dicurigai lewat inspeksi kode maupun dari log sintesis, karena sintesis tetap berhasil tanpa \textit{warning} tambahan dan RTL tetap valid secara sintaksis. Bug ini baru ditemukan lewat simulasi fungsional \texttt{iverilog}, bukan dari sintesis maupun dari observasi hasil pada \textit{hardware}. Perbaikannya adalah mendeklarasikan \textit{override} parameter secara eksplisit pada setiap instansiasi modul yang memiliki parameter \textit{address}/konfigurasi bernama sama dengan \texttt{localparam} pada modul \textit{parent}-nya.
+
+Temuan ini menegaskan prinsip metodologis yang sama (Subbab \ref{subsec:tristate-axi4}--\ref{subsec:tristate-core}): klaim bahwa suatu modifikasi RTL "sudah diterapkan" tidak dapat diandalkan hanya dari keberhasilan sintesis atau inspeksi \textit{source} sepintas. Verifikasi lewat simulasi fungsional maupun pengujian \textit{hardware} tetap diperlukan untuk memastikan perubahan benar-benar berpengaruh terhadap perilaku desain.
+
+\subsection{Multi-\textit{clock} ke Single-\textit{clock} pada \texttt{spi\_axi\_master.v}}
+\label{subsec:multiclock}
+
+Modul \texttt{spi\_axi\_master.v} pada rilis \textit{open-source} mriscv (445 baris) dirancang dengan dua \textit{clock domain} berbeda: tujuh blok \texttt{always} yang di-\textit{trigger} oleh \texttt{posedge SCLK} (mengikuti \textit{clock} SPI eksternal dari \textit{host}) dan dua blok \texttt{always} yang di-\textit{trigger} oleh \texttt{posedge CLK} (mengikuti \textit{clock core} internal). Desain dua \textit{clock domain} semacam ini lazim ditangani lewat mekanisme \textit{clock domain crossing} (CDC) eksplisit, namun tidak sesuai dengan arsitektur SPI \textit{runtime loader} pada penelitian ini, yang mensyaratkan \texttt{spi\_axi\_master.v} beroperasi sepenuhnya pada satu \textit{clock domain} (\textit{clock core}) agar dapat bertindak sebagai \textit{master} bus AXI4-Lite yang sejajar dengan \texttt{mriscvcore.v} tanpa mekanisme sinkronisasi CDC tambahan.
+
+Modul ini ditulis ulang menjadi 101 baris, seluruhnya di-\textit{trigger} oleh \texttt{posedge CLK} (tiga blok \texttt{always}), dengan sinyal SCLK eksternal dideteksi lewat teknik \textit{oversampling} alih-alih dijadikan sumber \textit{clock} langsung. Modifikasi ini bersifat \textbf{wajib} untuk arsitektur SPI \textit{runtime loader} yang diterapkan pada penelitian ini, bukan sekadar pilihan gaya penulisan RTL.
+
+\section{\textit{Maximum Operating Frequency} (\textit{Fmax}) Hasil \textit{Place-and-Route} dan \textit{Resource Utilization}}
+\label{sec:fmax}
+
+\subsection{Eksperimen A: \textit{Repeatability}}
+\label{subsec:eksperimen-a}
+
+Proses \texttt{make synth} dijalankan lima kali berturut-turut per konfigurasi, tanpa mengubah RTL di antara \textit{run} (\texttt{make clean} dijalankan sebelum tiap \textit{run} agar Yosys/nextpnr benar-benar dieksekusi ulang, bukan dilewati oleh \textit{dependency cache} Make). Hasil ditunjukkan pada Tabel \ref{Tab: Repeatability Fmax}.
+
+\begin{table}[h]
+	\centering
+	\begin{tabular}{|l|c|c|c|}
+		\hline
+		\textbf{Konfigurasi} & \textbf{\textit{n}} & \textbf{\textit{Fmax} Rata-rata (MHz)} & \textbf{Std. Dev. (MHz)} \\
+		\hline
+		RAM 4 KB, \textit{clock} 1,5625 MHz & 5 & 66,16 & 0,00 \\ \hline
+		RAM 32 KB, \textit{clock} 50 MHz & 5 & 67,57 & 0,00 \\ \hline
+	\end{tabular}
+	\vspace{0.5em}
+	\caption{Hasil Eksperimen \textit{Repeatability} Sintesis ($n=5$ per konfigurasi)}
+	\label{Tab: Repeatability Fmax}
+\end{table}
+
+Standar deviasi bernilai nol pada kedua konfigurasi karena kelima \textit{run} per konfigurasi menghasilkan \textit{Fmax} yang identik \textit{bit}-demi-\textit{bit}. Hal ini menunjukkan \texttt{nextpnr-xilinx} bersifat \textbf{deterministik} untuk RTL dan \textit{constraint} yang sama ketika memakai nilai \textit{seed default} internalnya (bukan \textit{seed} eksplisit yang diacak), sehingga sintesis berulang pada RTL tak berubah selalu mereproduksi hasil \textit{place-and-route} yang identik persis.
+
+\textit{Resource utilization} turut identik pada kelima \textit{run} per konfigurasi, sebagaimana diharapkan karena RTL yang disintesis sama. Hasilnya disajikan pada Tabel \ref{Tab: Utilisasi Resource}.
+
+\begin{table}[h]
+	\centering
+	\begin{tabular}{|l|c|c|c|c|c|}
+		\hline
+		\textbf{Konfigurasi} & \textbf{LUT} & \textbf{FF} & \textbf{RAMB36E1} & \textbf{DSP48} & \textbf{CARRY4} \\
+		\hline
+		RAM 4 KB, 1,5625 MHz & 2163 & 1395 & 1 & 0 & 225 \\ \hline
+		RAM 32 KB, 50 MHz & 2181 & 1403 & 8 & 0 & 223 \\ \hline
+	\end{tabular}
+	\vspace{0.5em}
+	\caption{\textit{Resource Utilization} FPGA (Xilinx Artix-7 XC7A35T)}
+	\label{Tab: Utilisasi Resource}
+\end{table}
+
+Utilisasi RAMB36E1 naik dari 1 menjadi 8 \textit{block}, konsisten dengan ekspansi kapasitas SRAM 4 KB$\rightarrow$32 KB (kenaikan 8$\times$). Utilisasi LUT, FF, dan CARRY4 relatif hampir sama antarkonfigurasi (selisih $<1\%$), karena perubahan RTL utama (lebar \textit{address bus} 10$\rightarrow$13 \textit{bit}, relokasi \textit{address map} AXI) hanya menyentuh sedikit logika kombinasional, bukan menambah blok fungsional besar. \textbf{DSP48 bernilai 0 pada kedua konfigurasi.} Nilai ini tidak berarti \texttt{MULT.v} absen dari desain. \texttt{MULT.v} diimplementasikan sebagai \textit{Booth multiplier} iteratif yang hanya memakai operasi penjumlahan dan \textit{shift}, tanpa operator perkalian Verilog, sehingga Yosys memetakannya ke LUT, FF, dan CARRY4, bukan ke DSP48. Modul ini tetap tersintesis karena terhubung ke \textit{control path} dan \textit{write-back path} pada \texttt{mriscvcore.v} (Subbab \ref{subsec:struktur-internal-mriscvcore} Bab III), dan \textit{cell} milik \texttt{MULT\_inst} tercatat pada log sintesis kedua konfigurasi. Sintesis \textit{standalone} \texttt{MULT.v} menggunakan \texttt{synth\_xilinx} menghasilkan 651 LUT, 248 FF, 103 CARRY4, dan 0 DSP48, atau setara sekitar 30\% dari total LUT konfigurasi RAM 32 KB. Verifikasi fungsional \texttt{MULT.v} dibahas pada Subbab \ref{sec:firmware-spi}.
+
+\subsection{Eksperimen B: Sensitivitas \textit{Seed}}
+\label{subsec:eksperimen-b}
+
+RTL yang disintesis pada eksperimen ini tidak diubah dari konfigurasi RAM 32 KB/50 MHz (sama dengan Eksperimen A). \textit{Netlist} Yosys (\texttt{spi.json}) hanya dihasilkan satu kali dan dipakai ulang untuk seluruh 10 \textit{run} \texttt{nextpnr-xilinx} dengan nilai \texttt{--seed} eksplisit berbeda-beda, sehingga perbedaan hasil murni berasal dari algoritma \textit{placement-and-routing}, bukan variasi \textit{netlist}. Hasil ditunjukkan pada Tabel \ref{Tab: Sensitivitas Seed}.
+
+\begin{table}[h]
+	\centering
+	\begin{tabular}{|c|c||c|c|}
+		\hline
+		\textbf{\textit{Seed}} & \textbf{\textit{Fmax} (MHz)} & \textbf{\textit{Seed}} & \textbf{\textit{Fmax} (MHz)} \\
+		\hline
+		1 & 69,88 & 6 & 73,31 \\ \hline
+		2 & 68,74 & 7 & 69,48 \\ \hline
+		3 & 70,12 & 8 & 68,97 \\ \hline
+		4 & 69,95 & 9 & 66,37 \\ \hline
+		5 & 63,59 & 10 & 67,01 \\ \hline
+	\end{tabular}
+	\vspace{0.5em}
+	\caption{Sensitivitas \textit{Fmax} terhadap Nilai \textit{Seed} \texttt{nextpnr-xilinx} (RAM 32 KB, 50 MHz)}
+	\label{Tab: Sensitivitas Seed}
+\end{table}
+
+Rata-rata \textit{Fmax} dari 10 \textit{seed} tersebut adalah 68,74 MHz dengan standar deviasi 2,61 MHz ($\approx$3,8\% dari rata-rata), rentang 63,59--73,31 MHz (selisih 9,72 MHz, $\approx$14,1\% dari rata-rata). Hasil ini menegaskan bahwa algoritma \textit{placer} (\textit{simulated annealing}) pada \texttt{nextpnr-xilinx} memang bersifat stokastik terhadap nilai \textit{seed} eksplisit. Kondisi ini berbeda dari Eksperimen A yang memakai \textit{seed default} tetap \cite{darvishi2025pipeline}. Nilai \textit{Fmax} pada konfigurasi \textit{seed default} (67,57 MHz, Tabel \ref{Tab: Repeatability Fmax}) berada di dalam rentang hasil \textit{sweep} 10-\textit{seed} ini dan dekat dengan mediannya, menunjukkan bahwa \textit{seed default} bukan kasus kebetulan terbaik atau terburuk, melainkan representasi yang cukup tipikal.
+
+\textit{Clock core} beroperasi pada 50 MHz. Bahkan pada \textit{seed} terburuk dari 10 sampel (\textit{seed} 5, 63,59 MHz), \textit{Fmax} masih $\approx$1,27$\times$ di atas \textit{operating point} 50 MHz. \textit{Safety margin} desain berkisar 1,27$\times$--1,47$\times$ di seluruh 10 \textit{seed} yang diuji, dan tidak ada \textit{seed} dalam sampel ini yang menyebabkan \textit{Fmax} turun di bawah 50 MHz. Hasil ini bukan jaminan formal atas keseluruhan ruang nilai \textit{seed} (10 \textit{seed} adalah sampel, bukan populasi lengkap), namun memberikan bukti empiris tambahan bahwa desain saat ini memiliki margin yang cukup terhadap variasi hasil \textit{place-and-route}, bukan hanya kebetulan dari satu hasil \textit{seed default} saja.
+
+\section{Penambahan Periferal UART dan I2C \textit{Controller}}
+\label{sec:uart-i2c}
+
+Subbab ini menguraikan hasil penambahan tiga modul periferal yang dirancang pada Subbab \ref{subsec:rancangan-uart-i2c} Bab III, yaitu \texttt{uart\_tx.v}, \texttt{uart\_rx.v}, dan \texttt{i2c\_master.v}, beserta GPIO \textit{bank} 2. Pembahasan mencakup integrasi ke bus AXI4-Lite, detail implementasi, hasil verifikasi pada simulasi dan \textit{hardware}, temuan selama integrasi, serta dampak penambahan periferal terhadap \textit{resource utilization} dan \textit{Fmax}.
+
+\subsection{Integrasi ke Bus AXI4-Lite}
+\label{subsec:integrasi-uart-i2c}
+
+Keempat \textit{slave} baru diintegrasikan pada \texttt{impl\_axi.v} dengan menaikkan parameter \texttt{slaves} dari 5 menjadi 9 dan memperluas \texttt{addr\_mask}/\texttt{addr\_use}. Elemen paling kiri pada kedua vektor tersebut berhubungan dengan \textit{slave} berindeks tertinggi:
+
+\begin{lstlisting}[language=Verilog]
+localparam slaves = 9;
+localparam [slaves*sword-1:0] addr_mask = {32'h00000003, 32'h0000000F,
+    32'h00000000, 32'h00000000, 32'h00000000, 32'h0000000F,
+    32'h00000001, 32'h00000001, 32'h00001FFF};
+localparam [slaves*sword-1:0] addr_use  = {32'h00004040, 32'h00004030,
+    32'h00004021, 32'h00004020, 32'h04000000, 32'h00004010,
+    32'h00004008, 32'h00004000, 32'h00000000};
+\end{lstlisting}
+
+UART TX dan UART RX masing-masing hanya memiliki satu register sehingga memakai \textit{mask} \texttt{0x0} (\textit{exact match}). GPIO \textit{bank} 2 memakai \textit{mask} \texttt{0xF} seperti GPIO \textit{bank} 1, sedangkan I2C \textit{controller} memakai \textit{mask} \texttt{0x3} untuk empat register.
+
+Ketika \texttt{slaves} pertama kali dinaikkan menjadi 6 untuk UART TX, \texttt{iverilog} menampilkan \textit{warning port width mismatch} pada instansiasi \texttt{axi4\_interconnect.v}. Instansiasi tersebut ternyata hanya meng-\textit{override} \texttt{addr\_mask} dan \texttt{addr\_use}, sedangkan \texttt{masters} dan \texttt{slaves} tetap memakai nilai \textit{default} di dalam \texttt{axi4\_interconnect.v} (\texttt{masters = 2}, \texttt{slaves = 5}). Selama desain memang memiliki dua \textit{master} dan lima \textit{slave}, nilai \textit{default} tersebut kebetulan benar sehingga kekurangan ini tidak terlihat. Temuan ini merupakan kasus kedua dari kelas bug yang sama dengan Subbab \ref{subsec:addr-mask}, yaitu parameter \textit{child module} yang diam-diam memakai nilai \textit{default}. Perbaikannya adalah meng-\textit{override} seluruh parameter secara eksplisit:
+
+\begin{lstlisting}[language=Verilog]
+axi4_interconnect #(
+    .masters(masters),
+    .slaves(slaves),
+    .addr_mask(addr_mask),
+    .addr_use(addr_use)
+) inst_axi4_interconnect ( ... );
+\end{lstlisting}
+
+\subsection{Implementasi UART}
+\label{subsec:impl-uart}
+
+Pada \texttt{uart\_tx.v}, penulisan saat \textit{transmitter} \textit{busy} tetap diterima oleh \textit{write channel} AXI, tetapi \textit{byte}-nya di-\textit{drop} (Subbab \ref{subsec:rancangan-uart-i2c} Bab III). Pengujian semantik \textit{non-blocking} ini dengan \textit{testbench} menemukan \textit{race condition}: terdapat \textit{window} satu \textit{clock cycle} antara saat pulsa \texttt{start\_pulse} dibangkitkan dan saat FSM \textit{transmitter} benar-benar meninggalkan \textit{state} IDLE. Penulisan kedua yang tiba tepat pada \textit{window} tersebut masih melihat \textit{transmitter} tidak \textit{busy}, sehingga dapat menimpa \textit{byte} pertama sebelum \textit{byte} itu mulai dikirim. Perbaikannya adalah memasukkan \texttt{start\_pulse} ke dalam definisi \textit{busy}:
+
+\begin{lstlisting}[language=Verilog]
+wire busy = (tstate != S_IDLE) || start_pulse;
+\end{lstlisting}
+
+Pada \texttt{uart\_rx.v} ditemukan \textit{race} serupa antara pembacaan register dan penerimaan \textit{byte}. Pada versi awal, \textit{flag valid} di-\textit{clear} satu \textit{clock cycle} setelah isi register di-\textit{snapshot} ke \texttt{RDATA}. Akibatnya, \textit{byte} yang selesai diterima tepat pada \textit{cycle} \textit{snapshot} tidak ikut ter-\textit{snapshot}, lalu \textit{flag valid}-nya ikut ter-\textit{clear}, sehingga \textit{byte} tersebut hilang tanpa menyalakan \textit{flag overrun}. Pada versi akhir, \textit{pop} terjadi pada \textit{cycle} yang sama dengan \textit{snapshot}, dan \textit{byte} baru yang tiba pada \textit{cycle} itu diprioritaskan atas \textit{pop}:
+
+\begin{lstlisting}[language=Verilog]
+assign rd_pop = RST && (ar_state == AR_IDLE) && ARVALID;
+always @(posedge CLK) begin
+    ...
+    if (rd_pop) begin rx_valid <= 0; rx_ovr <= 0; rx_ferr <= 0; end
+    if (done) begin                    // byte baru menang atas pop
+        rx_data  <= done_d;
+        rx_valid <= 1'b1;
+        if (rx_valid && !rd_pop) rx_ovr <= 1'b1;
+        if (done_fe) rx_ferr <= 1'b1;
+    end
+end
+\end{lstlisting}
+
+Kasus ini diuji pada \texttt{uart\_rx\_tb.v} dengan melakukan \textit{polling} register secara terus-menerus sambil menerima 8 \textit{byte} berurutan, diulang untuk 12 nilai \textit{offset} awal agar saat pembacaan jatuh pada semua \textit{phase} relatif terhadap akhir penerimaan \textit{byte}.
+
+Di sisi \textit{firmware}, \textit{polling} hingga \textit{transmitter} siap dilakukan oleh fungsi HAL pada \texttt{mriscv.h}. Penerimaan disediakan dalam versi \textit{non-blocking} (\texttt{uart\_getc\_nb()}, mengembalikan $-1$ bila belum ada data) dan versi \textit{blocking} (\texttt{uart\_getc()}):
+
+\begin{lstlisting}[language=C]
+#define UART_TXD (*(volatile unsigned *)(0x10080u))
+#define UART_RXR (*(volatile unsigned *)(0x10084u))
+
+static inline unsigned uart_busy(void){ return UART_TXD & 1u; }
+static inline void uart_putc(char c){
+    while (uart_busy()) {}                 /* polling bit busy */
+    UART_TXD = (unsigned)(unsigned char)c;
+}
+static inline void uart_puts(const char *s){ while (*s) uart_putc(*s++); }
+
+static inline int uart_getc_nb(void){
+    unsigned v = UART_RXR;                 /* baca = pop */
+    return (v & 0x100u) ? (int)(v & 0xFFu) : -1;
+}
+\end{lstlisting}
+
+\subsection{Implementasi I2C \textit{Controller}}
+\label{subsec:impl-i2c}
+
+Pada \textit{top module} \texttt{basys3\_top.v}, port \texttt{oled\_scl} dan \texttt{oled\_sda} diubah dari \texttt{output} menjadi \texttt{inout} agar level \textit{line} dapat dibaca kembali oleh \textit{controller} untuk keperluan ACK, pembacaan data, \textit{clock stretching}, dan deteksi \textit{arbitration lost}. Logika \textit{wired-AND} antara GPIO \textit{bank} 2 dan \texttt{i2c\_master.v} dituliskan sebagai berikut:
+
+\begin{lstlisting}[language=Verilog]
+assign oled_scl = (gpio2_datanw[0] & i2c_scl_o) ? 1'bz : 1'b0;
+assign oled_sda = (gpio2_datanw[1] & i2c_sda_o) ? 1'bz : 1'b0;
+\end{lstlisting}
+
+Kedua pin memakai \textit{pull-up} internal melalui atribut \texttt{PULLUP true} pada \textit{file} XDC. Karena GPIO \textit{bank} 2 bernilai nol setelah \textit{reset}, fungsi \texttt{i2c\_hw\_init()} menulis logika 1 ke kedua pin GPIO tersebut sebelum \textit{hardware controller} dipakai. Pengiriman satu \textit{byte} dilakukan oleh fungsi HAL berikut, yang mengembalikan nilai 1 bila \textit{slave} menjawab ACK:
+
+\begin{lstlisting}[language=C]
+static inline int i2c_hw_write(unsigned char b, unsigned flags){
+    I2C_DATA = b;
+    I2C_CMD  = I2C_WRITE | flags;          /* flags: I2C_START, I2C_STOP */
+    return (i2c__wait() & 6u) == 0;        /* bit1 NACK, bit2 arb_lost */
+}
+\end{lstlisting}
+
+Dengan nilai DIV \textit{default} 31, satu periode SCL sama dengan $4 \times 31 = 124$ \textit{clock cycle}, atau 403,2 kHz pada \textit{clock core} 50 MHz. Nilai ini 0,8\% di atas batas 400 kHz \textit{Fast-mode}, karena hasil $50\,000\,000/(4 \times 400\,000) = 31{,}25$ dibulatkan ke bawah menjadi 31. Layar SSD1306 bekerja normal pada frekuensi ini. Bila kepatuhan ketat terhadap batas \textit{Fast-mode} diperlukan, \textit{firmware} cukup menulis DIV $= 32$ sehingga SCL menjadi 390,6 kHz.
+
+Pengiriman satu \textit{byte} beserta \textit{bit} ACK membutuhkan 9 periode SCL, yaitu $9 \times 124 = 1.116$ \textit{clock cycle}. Pada simulasi, \textit{firmware} yang mengirim setiap \textit{byte} dengan urutan \textit{write} DATA, \textit{write} CMD, lalu \textit{polling} STATUS menambahkan sekitar 290 \textit{clock cycle} per \textit{byte}, sehingga \textit{controller} berada dalam kondisi \textit{busy} sekitar 79\% dari waktu selama transfer \textit{back-to-back}.
+
+\subsection{Hasil Verifikasi Simulasi dan \textit{Hardware}}
+\label{subsec:uji-uart-i2c}
+
+Hasil verifikasi tiga \textit{level} yang dijelaskan pada Subbab \ref{subsec:rancangan-uart-i2c} Bab III dirangkum pada Tabel \ref{Tab: Verifikasi UART I2C}.
+
+\begin{table}[H]
+	\centering
+	\small
+	\begin{tabular}{|p{1.4cm}|p{4.2cm}|p{6.0cm}|c|}
+		\hline
+		\textbf{\textit{Level}} & \textbf{\textit{Testbench} / \textit{Firmware}} & \textbf{Skenario yang Diperiksa} & \textbf{Hasil} \\
+		\hline
+		Unit & \texttt{uart\_tx\_tb.v} & Pengiriman \texttt{0xA5} dan \texttt{0x00}, TXD kembali \textit{idle high}, \textit{write} saat \textit{busy} selesai cepat dan \textit{byte}-nya di-\textit{drop} tanpa transmisi susulan & PASS \\ \hline
+		Unit & \texttt{uart\_rx\_tb.v} & Penerimaan \textit{byte}, \textit{flag valid}, \textit{overrun}, dan \textit{framing error}, \textit{glitch}, \textit{back-to-back byte}, \textit{read/receive race} (12 \textit{offset} $\times$ 8 \textit{byte}) & PASS \\ \hline
+		Unit & \texttt{i2c\_master\_tb.v} & \textit{Write} 3 \textit{byte}, NACK pada \textit{address} salah, \textit{read} dengan ACK/NACK, \textit{repeated} START, \textit{clock stretching}, DIV $<4$ ditolak, \textit{arbitration lost} & PASS \\ \hline
+		SoC & \texttt{impl\_axi\_}\allowbreak\texttt{uartrx\_tb.v}\newline + \texttt{uart\_echo.c} & \textit{Banner} terkirim, karakter dari \textit{testbench} di-\textit{echo}, statistik \texttt{ovr=0 ferr=0}, tanpa \textit{trap} & PASS \\ \hline
+		SoC & \texttt{basys3\_top\_}\allowbreak\texttt{i2c\_tb.v}\newline + \texttt{i2c\_test.c} & Urutan \textit{write}, NACK, \textit{repeated} START, dan \textit{read} terhadap model \textit{slave} I2C. LED $=$ \texttt{0x5A}, tanpa \textit{trap} & PASS \\ \hline
+		\textit{Board} & \texttt{uart\_hello.c} & Teks berulang tampil benar pada \textit{serial terminal} 115200 8N1 & Berhasil \\ \hline
+		\textit{Board} & \texttt{uart\_stress.c} & 3202 baris dalam 20 detik tanpa baris \textit{corrupt} dan tanpa nilai \textit{counter} yang terlewat & Berhasil \\ \hline
+		\textit{Board} & \texttt{uart\_echo.c} & Karakter yang diketik pada terminal di-\textit{echo} & Berhasil \\ \hline
+		\textit{Board} & \texttt{oled\_hw.c} & Teks ``Hello World'' tampil melalui \textit{hardware} I2C \textit{controller} & Berhasil \\ \hline
+		\textit{Board} & \texttt{oled\_i2c\_stress.c} & Ronde pola layar berulang pada DIV 31, 62, dan 125. \textit{Error counter} N, A, S, T tetap nol & Berhasil \\ \hline
+		\textit{Board} & \texttt{oled\_stress.c} & Regresi I2C \textit{bit-bang} setelah \textit{line} diubah menjadi \textit{wired-AND} & Berhasil \\ \hline
+	\end{tabular}
+	\normalsize
+	\vspace{0.5em}
+	\caption{Ringkasan Verifikasi Modul UART dan I2C}
+	\label{Tab: Verifikasi UART I2C}
+\end{table}
+
+Uji \texttt{uart\_stress.c} mengirim baris sepanjang 66 \textit{byte}, berisi \textit{counter} heksadesimal 8 digit dan sebuah kalimat tetap, secara terus-menerus tanpa jeda. \textit{String} dibaca dari RAM saat \textit{runtime}, sehingga uji ini juga melibatkan \textit{load/store path} pada \textit{core}. Dalam 20 detik diterima 3202 baris, setara dengan $3202 \times 66 / 20 \approx 10.570$ \textit{byte}/s, atau sekitar 92\% dari \textit{throughput} maksimum teoretis 11.520 \textit{byte}/s pada 115200 \textit{baud} 8N1 (10 \textit{bit} per \textit{byte}). Tidak ditemukan baris yang \textit{corrupt} maupun nilai \textit{counter} yang terlewat.
+
+Uji \texttt{oled\_i2c\_stress.c} memakai mode BUFFER dan menjalankan ronde berulang tanpa henti. Setiap ronde berisi layar putih penuh dan hitam penuh (sekitar 1.044 \textit{byte} per \textit{frame}), 16 \textit{frame} batang vertikal yang bergeser, pola \textit{checkerboard}, layar teks status, serta 512 kali perubahan kontras layar yang masing-masing terdiri atas dua transaksi pendek (START, tiga \textit{byte}, STOP), sehingga terdapat 1.024 transaksi berurutan. Nilai DIV diganti setiap ronde secara bergiliran: 31, 62, dan 125, atau sekitar 400, 200, dan 100 kHz. \textit{Firmware} memeriksa sendiri empat jenis \textit{error} dan melaporkannya melalui UART setiap ronde: N (\textit{byte} yang dijawab NACK), A (\textit{arbitration lost}), S (\textit{checksum} isi \textit{buffer} yang tidak konsisten), dan T (waktu pengiriman \textit{frame}, diukur dengan \texttt{rdcycle}, berada di luar \textit{window} teoretis, yang menandakan \textit{bit} hilang atau \textit{controller} macet). Selama pengujian keempat \textit{counter} tetap bernilai nol. Uji ini sekaligus memanfaatkan UART sebagai \textit{channel} pelaporan, sehingga kedua periferal baru bekerja bersamaan.
+% CATATAN: lengkapi durasi pengujian atau jumlah ronde oled_i2c_stress yang diamati di board.
+
+\subsection{Temuan: \textit{Hang} pada \texttt{uart\_puts()} Disebabkan \textit{Linker Script}}
+\label{subsec:bss-align}
+
+Pada tahap awal pengujian UART di \textit{board}, sebagian \textit{firmware} berhenti total tanpa mengirim satu karakter pun. Gejalanya tampak bergantung pada panjang \textit{string}: \texttt{uart\_puts()} dengan \textit{string} tiga karakter berjalan normal, sedangkan \textit{string} empat karakter langsung berhenti, padahal hasil \textit{disassembly} kedua program identik kecuali isi \textit{string}-nya. Dugaan awal mengarah ke \textit{hardware}, antara lain perilaku \textit{read-during-write} pada \textit{register file} hasil sintesis, \textit{counter} kecil di dalam \texttt{axi4\_interconnect.v}, dan margin \textit{timing}. Dugaan \textit{timing} gugur karena gejala yang sama tetap muncul ketika \textit{clock core} diturunkan ke 25 MHz.
+
+Penyebab sebenarnya ada pada \textit{linker script} \texttt{link\_c.ld}. \textit{Directive} \texttt{. = ALIGN(4)} yang ditulis di luar \textit{section} \texttt{.bss} tidak menjamin \texttt{.bss} dimulai pada \textit{address} kelipatan 4. Ketika panjang \texttt{.rodata} bukan kelipatan 4, misalnya \textit{string} \texttt{"0123"} beserta \textit{null terminator} (5 \textit{byte}), \texttt{\_\_bss\_start} jatuh pada \textit{address} \texttt{0x105}. \textit{Startup code} \texttt{crt0.S} kemudian mengosongkan \texttt{.bss} dengan instruksi \texttt{sw}, yang pada \textit{address} tersebut menjadi akses \textit{misaligned}, sehingga FSM \textit{core} masuk \textit{state} \textit{trap} sebelum \texttt{main()} sempat dijalankan. \textit{String} tiga karakter kebetulan aman karena panjangnya beserta \textit{null terminator} tepat 4 \textit{byte}. Perbaikannya adalah meletakkan \textit{alignment} di dalam definisi \textit{section}:
+
+\begin{lstlisting}
+/* sebelum */  .bss : {
+/* sesudah */  .bss : ALIGN(4) {
+\end{lstlisting}
+
+Hubungan sebab-akibat ini dikonfirmasi pada \textit{board}: \textit{firmware} uji dengan kode instruksi identik berhenti ketika di-\textit{link} dengan \textit{linker script} lama dan berjalan normal dengan \textit{linker script} yang telah diperbaiki. Daftar \textit{firmware} yang \textit{address} \texttt{.bss}-nya tidak \textit{aligned} pada \textit{linker script} lama juga tepat sama dengan daftar \textit{firmware} yang sebelumnya tercatat berhenti. Seperti kasus \texttt{negedge} pada Subbab \ref{subsec:negedge}, dugaan awal yang keliru tetap didokumentasikan karena menunjukkan bahwa gejala yang tampak seperti kerusakan \textit{hardware} dapat berasal dari \textit{software} pendukung.
+
+Temuan ini mendorong dua perbaikan tambahan pada RTL. Pertama, sinyal \texttt{trap} dari \textit{core} disambungkan ke LED LD15, karena tanpa indikator tersebut kondisi \textit{trap} dan kondisi bus yang macet (\textit{stuck}) sama-sama hanya terlihat sebagai LED yang berhenti. Kedua, \texttt{impl\_axi.v} diberi sinyal \textit{bus reset} (\texttt{BUS\_RST}) yang membangkitkan pulsa \textit{reset} singkat pada \texttt{axi4\_interconnect.v} dan seluruh \textit{slave} setiap kali \textit{core} masuk kondisi \textit{reset}. Sebelum perbaikan ini, \textit{trap} yang terjadi di tengah transaksi \textit{write} dapat membuat \textit{interconnect} terus menunggu \textit{handshake} dari \textit{core} yang sudah berhenti, sehingga seluruh \textit{upload} SPI berikutnya gagal tanpa pesan \textit{error} sampai FPGA di-\textit{reset} penuh. Perbaikan ini diverifikasi dengan simulasi (\texttt{impl\_axi\_busrst\_tb.v}) dan pada \textit{board}.
+
+\subsection{\textit{Resource Utilization} dan \textit{Fmax} Setelah Penambahan Periferal}
+\label{subsec:resource-uart-i2c}
+
+Tabel \ref{Tab: Resource Modul UART I2C} menunjukkan hasil sintesis \textit{standalone} setiap modul menggunakan \texttt{synth\_xilinx} pada Yosys 0.38. Jumlah LUT dihitung dari \textit{cell} LUT1--LUT6 pada laporan \texttt{stat}, dengan cara yang sama seperti Tabel \ref{Tab: Utilisasi Resource}.
+
+\begin{table}[H]
+	\centering
+	\begin{tabular}{|l|c|c|c|}
+		\hline
+		\textbf{Modul} & \textbf{LUT} & \textbf{FF} & \textbf{CARRY4} \\
+		\hline
+		\texttt{uart\_tx.v} & 41 & 39 & 4 \\ \hline
+		\texttt{uart\_rx.v} & 39 & 62 & 4 \\ \hline
+		\texttt{i2c\_master.v} & 95 & 100 & 10 \\ \hline
+		\textbf{Total} & \textbf{175} & \textbf{201} & \textbf{18} \\ \hline
+	\end{tabular}
+	\vspace{0.5em}
+	\caption{\textit{Resource Utilization} Modul UART dan I2C (Sintesis \textit{Standalone})}
+	\label{Tab: Resource Modul UART I2C}
+\end{table}
+
+Perbandingan utilisasi keseluruhan desain sebelum dan sesudah penambahan periferal ditunjukkan pada Tabel \ref{Tab: Resource Sebelum Sesudah}. Baris pertama diambil dari Tabel \ref{Tab: Utilisasi Resource}, sedangkan baris kedua diambil dari laporan \texttt{stat} sintesis desain akhir.
+
+\begin{table}[H]
+	\centering
+	\begin{tabular}{|l|c|c|c|c|c|}
+		\hline
+		\textbf{Konfigurasi} & \textbf{LUT} & \textbf{FF} & \textbf{RAMB36E1} & \textbf{DSP48} & \textbf{CARRY4} \\
+		\hline
+		Sebelum penambahan & 2181 & 1403 & 8 & 0 & 223 \\ \hline
+		Desain akhir & 2532 & 1636 & 8 & 0 & 241 \\ \hline
+		Selisih & +351 & +233 & 0 & 0 & +18 \\ \hline
+	\end{tabular}
+	\vspace{0.5em}
+	\caption{\textit{Resource Utilization} Sebelum dan Sesudah Penambahan Periferal (RAM 32 KB, 50 MHz)}
+	\label{Tab: Resource Sebelum Sesudah}
+\end{table}
+
+Kenaikan total adalah 351 LUT ($+16\%$) dan 233 FF ($+17\%$). Berdasarkan sintesis \textit{standalone}, ketiga modul periferal menyumbang 175 LUT dan 201 FF. Sisanya, sekitar 176 LUT dan 32 FF, berasal dari perubahan lain yang masuk ke RTL pada periode yang sama dan tidak diukur secara terpisah, antara lain perluasan logika \textit{decoder} dan \textit{multiplexer} pada \texttt{axi4\_interconnect.v} dari lima menjadi sembilan \textit{slave}, instansiasi kedua \texttt{completogpio.v}, \textit{reset synchronizer} pada \textit{top module}, serta logika \textit{bus reset}. Kenaikan CARRY4 sebesar 18 sama dengan jumlah CARRY4 ketiga modul periferal. Kebutuhan BRAM dan DSP48 tidak berubah, dan desain akhir hanya memakai sekitar 12\% dari 20.800 LUT pada XC7A35T, sehingga ruang untuk periferal tambahan masih besar.
+
+Desain akhir di-\textit{place-and-route} dengan target \texttt{-{}-freq 50} dan \textit{seed} 13, menghasilkan \textit{Fmax} 60,87 MHz (\texttt{PASS at 50.00 MHz}), atau margin 1,22$\times$ terhadap \textit{clock core}. Laporan pertama nextpnr-xilinx pada \textit{run} yang sama mencatat 47,28 MHz (\texttt{FAIL}), tetapi angka tersebut merupakan estimasi sebelum \textit{routing}. Sesuai Subbab \ref{subsec:analisis-kuantitatif} Bab III, nilai yang dipakai adalah laporan kedua. \textit{Seed} 13 dipilih dari \textit{sweep} 20 \textit{seed} pada konfigurasi antara (UART TX/RX dan GPIO \textit{bank} 2, sebelum I2C ditambahkan) yang menghasilkan rata-rata 60,16 MHz, standar deviasi 3,16 MHz, dan rentang 55,74--66,28 MHz, dengan seluruh \textit{seed} memenuhi target 50 MHz. Pada konfigurasi antara tersebut \textit{seed} 13 memberi nilai tertinggi (66,28 MHz), sedangkan setelah I2C ditambahkan \textit{seed} yang sama memberi 60,87 MHz. Artinya, \textit{seed} terbaik untuk satu \textit{netlist} tidak otomatis tetap terbaik setelah RTL berubah, sehingga \textit{sweep} perlu diulang setiap kali RTL diubah. \textit{Sweep} \textit{seed} pada desain akhir belum dilakukan pada penelitian ini.
+
+Nilai \textit{Fmax} pada subbab ini tidak dapat dibandingkan langsung dengan Eksperimen A dan B (Subbab \ref{sec:fmax}). Eksperimen A dan B dijalankan dengan target \textit{default} nextpnr-xilinx (log mencatat \texttt{PASS at 12.00 MHz}), sedangkan desain akhir dijalankan dengan target eksplisit 50 MHz, sehingga sasaran optimasi \textit{placer} pada kedua kelompok eksperimen berbeda.
+
+Beberapa keterbatasan periferal yang ditambahkan perlu dicatat. \textit{Baud rate} UART bersifat tetap (\textit{fixed}) dan hanya dapat diubah melalui parameter saat sintesis. UART \textit{receiver} hanya memiliki \textit{holding register} satu \textit{byte} tanpa FIFO, sehingga \textit{firmware} yang lama tidak membaca register dapat kehilangan data (ditandai \textit{flag overrun}). Selain itu, \textit{firmware} \texttt{encoder\_oled.c}, yang memerlukan \textit{rotary encoder} fisik, belum diuji ulang di \textit{board} setelah \textit{line} I2C diubah menjadi \textit{wired-AND}.
+
+\section{Perbandingan dengan Penelitian Terdahulu}
+\label{sec:perbandingan}
+
+Sebagai pembanding, tim pengembang mriscv sendiri (\texttt{onchipuis}) telah mengimplementasikan \textit{soft-core} ini pada FPGA lewat \textit{repository} \texttt{mriscv\_vivado}, menggunakan \textit{board} Nexys4 DDR dengan chip Xilinx Artix-7 XC7A100T dan \textit{toolchain} Vivado 2016.4 (\textit{proprietary}). Perbandingan karakteristik implementasi kedua penelitian ditunjukkan pada Tabel \ref{Tab: Perbandingan mriscv_vivado}.
+
+\begin{table}[h]
+	\centering
+	\begin{tabular}{|l|p{5cm}|p{5cm}|}
+		\hline
+		\textbf{Aspek} & \textbf{Penelitian Ini} & \textbf{\texttt{mriscv\_vivado}} \\
+		\hline
+		FPGA & Basys3, XC7A35T & Nexys4 DDR, XC7A100T (3$\times$ lebih besar) \\ \hline
+		\textit{Toolchain} & Sepenuhnya \textit{open-source} (Yosys, nextpnr-xilinx, openXC7) & Vivado \textit{proprietary} \\ \hline
+		Memori & BRAM 32 KB & BRAM + DDR2 eksternal \\ \hline
+		\textit{Program loading} & SPI \textit{runtime loader} (independen dari \textit{bitstream}) & \texttt{write\_cfgmem} (digabung dalam satu \textit{file} \texttt{.mcs}) \\ \hline
+		Periferal & GPIO (2 \textit{bank}), UART TX/RX, \textit{hardware} I2C \textit{controller}, OLED, \textit{rotary encoder} & +UART, xADC, DAC fungsional, DDR2 \\ \hline
+		\textit{Linker} & \texttt{-nostdlib} (\textit{default}). \texttt{-lgcc} terverifikasi dapat ditambahkan untuk operasi pembagian & \texttt{-nostdlib -lgcc} \\ \hline
+	\end{tabular}
+	\vspace{0.5em}
+	\caption{Perbandingan Karakteristik Implementasi dengan \texttt{mriscv\_vivado}}
+	\label{Tab: Perbandingan mriscv_vivado}
+\end{table}
+
+Perbedaan paling signifikan terletak pada mekanisme \textit{program loading}. \texttt{mriscv\_vivado} menggabungkan \textit{bitstream} konfigurasi FPGA dan program \textit{firmware} ke dalam satu \textit{file} \texttt{.mcs} lewat \texttt{write\_cfgmem}, sehingga setiap perubahan \textit{firmware} menuntut regenerasi ulang seluruh \textit{configuration file}. Arsitektur SPI \textit{runtime loader} pada penelitian ini (Subbab \ref{sec:firmware-spi}) memisahkan sepenuhnya kedua proses tersebut, sehingga \textit{iteration cycle} pengembangan \textit{firmware} jauh lebih cepat karena tidak memerlukan sintesis maupun pemrograman ulang FPGA setiap kali program berubah.
+
+Menariknya, tim \texttt{onchipuis} sendiri turut mengalami kendala serupa dengan modul memori. Mereka juga menulis ulang modul RAM dari nol untuk port Vivado mereka, menggunakan \textit{template} Xilinx \texttt{xilinx\_single\_port\_ram\_write\_first} (mode \textit{write-first}). Pendekatan ini berbeda dari implementasi \texttt{SP32B1024.v} (Subbab \ref{subsec:sp32b1024}) pada penelitian ini yang menggunakan mode \textit{read-old-data}. Konvergensi independen ini menguatkan temuan bahwa modul memori memang tidak tersedia pada rilis \textit{open-source} mriscv untuk target FPGA manapun, bukan keterbatasan khusus pada \textit{open-source toolchain} yang dipakai penelitian ini.
